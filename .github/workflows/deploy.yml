@@ -1,0 +1,91 @@
+name: "deploy"
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'The environment to deploy to (i.e test or prod)'
+        type: string
+        required: true
+      app_name:
+        description: 'The application name'
+        type: string
+        default: 'nevermore-poc'
+        required: true
+      version:
+        description: 'The application version you wish to deploy (i.e. v23.44 or 4b9d26ee)'
+        type: string
+        required: false
+  workflow_call:
+    inputs:
+      environment:
+        description: 'The environment to deploy to'
+        type: string
+        required: true
+      app_name:
+        description: 'The application name'
+        type: string
+        required: true
+
+env:
+  REGION: ${{ inputs.environment == 'prod' && 'us-west-1' || 'us-east-2' }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare Version Name
+        run: |
+          VERSION=${GITHUB_SHA::7}
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            TAG_VERSION=${GITHUB_REF/refs\/tags\//}
+            echo "TAG_VERSION=$TAG_VERSION" >> $GITHUB_ENV
+          fi
+          echo "BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_ENV
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.REGION }}
+
+      - name: Retag build for release
+        if: inputs.environment == 'prod' && startsWith(github.event.ref, 'refs/tags/v')
+        env:
+          VERSION: ${{ env.VERSION }}
+          TAG_VERSION: ${{ env.TAG_VERSION }}
+        run: |
+          MANIFEST=$(aws ecr batch-get-image --region ${{ env.REGION }} --repository-name "${{ inputs.app_name }}" --image-ids imageTag=${{ env.VERSION }} --output text --query 'images[].imageManifest')
+          aws ecr put-image --region ${{ env.REGION }} --repository-name "${{ inputs.app_name }}" --image-tag "${{ env.TAG_VERSION || inputs.version }}" --image-manifest "$MANIFEST"
+
+      - name: Get latest task definition from ECS
+        run: |
+          aws ecs describe-task-definition --task-definition "${{ inputs.environment }}-${{ inputs.app_name }}" \
+          --region ${{ env.REGION }} --query taskDefinition > task-definition.json
+
+      - name: Fill in the new image ID in the Amazon ECS task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        env:
+          VERSION: ${{ env.VERSION }}
+        with:
+          task-definition: task-definition.json
+          container-name: ${{ inputs.app_name }}
+          image: "${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.REGION }}.amazonaws.com/${{ inputs.app_name }}:${{ inputs.version || env.VERSION }}"
+          environment-variables: |
+            DD_VERSION=${{ inputs.version || env.VERSION }}
+
+      - name: Deploy Amazon ECS task definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: "${{ inputs.environment }}-${{ inputs.app_name }}"
+          cluster: "${{ inputs.environment }}-ecs-cluster"
+          wait-for-service-stability: true

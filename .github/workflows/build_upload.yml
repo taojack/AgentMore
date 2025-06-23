@@ -1,0 +1,70 @@
+name: "build-upload"
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'The environment to deploy to'
+        type: string
+        required: true
+      app_name:
+        description: 'The application name'
+        type: string
+        required: true
+
+concurrency:
+  group: ${{ github.ref }}
+
+env:
+  IMAGE_NAME: ${{ inputs.app_name }}
+
+jobs:
+  build_upload:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare Version Name
+        run: |
+          VERSION=${GITHUB_SHA::7}
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            TAG_VERSION=${GITHUB_REF/refs\/tags\//}
+            echo "TAG_VERSION=$TAG_VERSION" >> $GITHUB_ENV
+          fi
+          echo "BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_ENV
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: "us-east-2"
+
+      - name: Log into registry
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          mask-password: 'true'
+
+      - name: Build and push Docker image
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          REPOSITORY: ${{ inputs.app_name }}
+          VERSION: ${{ env.VERSION }}
+        run: |
+          docker build -t $REGISTRY/$REPOSITORY:$VERSION .
+          docker push $REGISTRY/$REPOSITORY:$VERSION
+
+  deploy:
+    if: inputs.environment == 'test'
+    needs: build_upload
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: test
+      app_name: nevermore-poc
+    secrets: inherit

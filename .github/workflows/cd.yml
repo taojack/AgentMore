@@ -1,0 +1,35 @@
+name: "cicd"
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+    paths-ignore:
+      - "terraform/**"
+
+jobs:
+  build_deploy_test:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/build_upload.yml
+    with:
+      environment: test
+      app_name: nevermore-poc
+    secrets: inherit
+
+  deploy_prod:
+    if: startsWith(github.event.ref, 'refs/tags/v')
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: prod
+      app_name: nevermore-poc
+    secrets: inherit
+
+  build_deploy_bugfix:
+    if: github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/build_upload.yml
+    with:
+      environment: test
+      app_name: nevermore-poc
+    secrets: inherit

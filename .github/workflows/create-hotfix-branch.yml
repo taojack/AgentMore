@@ -1,0 +1,24 @@
+name: "create-hotfix-branch"
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'The tag to create a hotfix branch from (ie. v24.16)'
+        type: string
+        required: true
+
+jobs:
+  create_hotfix_branch:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-tags: true
+        ref: ${{ github.event.inputs.tag }}
+
+    - name: Create hotfix branch
+      run: |
+        git checkout -b hotfix_${{ github.event.inputs.tag }}
+        git push origin hotfix_${{ github.event.inputs.tag }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
